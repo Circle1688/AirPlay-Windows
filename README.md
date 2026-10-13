@@ -6,7 +6,7 @@ native Windows stack — no Bonjour SDK, no Apple runtime dependency.
 
 > **Status — working AirPlay 2 receiver on Windows.**
 >
-> An iPhone / iPad / Mac on the same Wi-Fi sees `AirPlay-Windows`
+> An iPhone / iPad / Mac on the same Wi-Fi sees `<computer-name>-AirPlay`
 > in its Control Center. Screen mirroring shows up **in real time
 > in an SDL2 window** (498x1080 for an iPhone 16 in portrait,
 > resizable, aspect-preserving). Apple Music, native videos and
@@ -123,12 +123,14 @@ Expected log lines at startup with `--log`:
 ```
 ip=192.168.x.x
 TCP server listening on [::]:7000 (IPv4+IPv6)
-mDNS registered: AirPlay-Windows._airplay._tcp.local
-mDNS registered: XXXXXXXXXXXX@AirPlay-Windows._raop._tcp.local
+mDNS registered: DESKTOP-ABC-AirPlay._airplay._tcp.local
+mDNS registered: XXXXXXXXXXXX@DESKTOP-ABC-AirPlay._raop._tcp.local
 ```
 
 Then on iPhone / iPad / Mac on the same Wi-Fi: Control Center ->
-Screen Mirroring -> `AirPlay-Windows`. On tap, the logs show the
+Screen Mirroring -> `<computer-name>-AirPlay` (for example,
+`DESKTOP-ABC-AirPlay`). The name is read from the computer at each
+startup. On tap, the logs show the
 full handshake + the H.264 stream coming in.
 
 ### In-app shortcuts
@@ -137,29 +139,11 @@ full handshake + the H.264 stream coming in.
 |--------------------|-------------------------------------------------|
 | `H`                | Toggle "Hide UI" — hides every panel + the SDL window border, snaps the window to the video aspect ratio |
 | `F` / `F11` / dbl-click | Toggle real OS fullscreen                  |
-| `R`                | Start / stop an MP4 recording of the AirPlay video stream |
 | `ESC`              | Peels back: exits fullscreen, then Hide UI, then quits |
 
 The toolbar also exposes a **Disconnect** button (only visible when a
 session is active) that drops the current AirPlay client and returns
 the renderer to the idle "Waiting for AirPlay" screen.
-
-The **REC** toolbar button (or `R`) records the decoded AirPlay video to
-an MP4 file. The destination can be selected with the native **Browse...**
-button in **Options > Recording**; by default files are saved next to the
-`airplay-windows.exe` application. Encoding runs
-on a bounded background queue so a slow disk cannot increase mirroring
-latency. Resolution/orientation changes are fitted into the original MP4
-canvas without stretching.
-The recording panel also exposes **Auto / GPU / CPU** encoder selection and
-a 2-40 Mbps bitrate control. Auto prefers NVIDIA NVENC, AMD AMF, Intel Quick
-Sync, then Windows Media Foundation before falling back to a CPU encoder.
-The MP4 video codec can be switched between broadly compatible **H.264** and
-more efficient **H.265/HEVC**. HEVC uses `hevc_nvenc`, `hevc_amf`, `hevc_qsv`,
-`hevc_mf`, or `libx265`, depending on the selected hardware mode and what the
-installed FFmpeg build exposes.
-Decoded RAOP audio is muxed into the same MP4 as a synchronized stereo AAC
-track (192 kbps), independently of whether a Windows playback device exists.
 
 ## AirPlay over USB-C cable (no Wi-Fi)
 
@@ -188,7 +172,7 @@ an iOS toggle and an Apple driver on Windows.
 4. Run `airplay-windows.exe --log` — at startup the logs announce
    `mDNS registered: ... 172.20.10.x`.
 5. On the iPhone: Control Center -> Screen Mirroring ->
-   `AirPlay-Windows` shows up **even with no shared Wi-Fi**.
+   `<computer-name>-AirPlay` shows up **even with no shared Wi-Fi**.
 
 AirPlay then routes over the Personal Hotspot ethernet subnet, which
 exists only along the cable. No cellular data is consumed (the

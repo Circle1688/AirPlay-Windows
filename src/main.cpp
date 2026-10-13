@@ -28,6 +28,10 @@
 #include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
 
 std::atomic<bool> g_stop{false};
@@ -44,6 +48,34 @@ BOOL WINAPI console_handler(DWORD type) {
 void signal_handler(int) { g_stop = true; }
 #endif
 
+std::string default_receiver_name() {
+#if defined(_WIN32)
+    wchar_t computer_name[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+    if (GetComputerNameW(computer_name, &size) && size > 0) {
+        const int length = WideCharToMultiByte(
+            CP_UTF8, 0, computer_name, static_cast<int>(size),
+            nullptr, 0, nullptr, nullptr);
+        if (length > 0) {
+            std::string name(static_cast<std::size_t>(length), '\0');
+            if (WideCharToMultiByte(
+                    CP_UTF8, 0, computer_name, static_cast<int>(size),
+                    name.data(), length, nullptr, nullptr) == length) {
+                return name + "-AirPlay";
+            }
+        }
+    }
+#else
+    char computer_name[256]{};
+    if (gethostname(computer_name, sizeof(computer_name) - 1) == 0 &&
+        computer_name[0] != '\0') {
+        return std::string(computer_name) + "-AirPlay";
+    }
+#endif
+    LOG_WARN << "Could not read computer name; using AirPlay-Windows";
+    return "AirPlay-Windows";
+}
+
 // Pick sensible defaults. The PI and feature bitmask are copied from RPiPlay's
 // defaults — known to pass the initial iOS detection phase.
 //
@@ -56,7 +88,7 @@ void signal_handler(int) { g_stop = true; }
 // an opt-in experimental path.
 ap::airplay::DeviceContext build_device_context(bool hls_playback) {
     ap::airplay::DeviceContext ctx;
-    ctx.name     = "AirPlay-Windows";
+    ctx.name     = default_receiver_name();
     ctx.deviceid = ap::net::primary_mac();
     ctx.model    = "AppleTV3,2";
     ctx.pi       = "b08f5a79-db29-4384-b456-a4784d9e6055";

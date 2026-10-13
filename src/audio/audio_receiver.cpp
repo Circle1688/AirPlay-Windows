@@ -308,10 +308,6 @@ void AudioReceiver::thread_fn() {
                 int     have = 0;
                 while ((have = decoder_->pull_pcm_s16(
                             pcm, static_cast<int>(sizeof(pcm) / sizeof(pcm[0])))) > 0) {
-                    if (cfg_.renderer) {
-                        cfg_.renderer->push_audio_pcm(
-                            pcm, have, cfg_.sample_rate, 2);
-                    }
                     if (output_) output_->push(pcm, have);
                 }
             }

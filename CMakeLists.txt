@@ -268,7 +268,7 @@ endif()
 # Pinned vendored copy of Dear ImGui + the SDL2 / SDLRenderer2 backends. We
 # draw directly over the SDL renderer — zero IPC, zero frame copy, runs in
 # the same thread/GPU context as the video texture. The overlay gives us a
-# device sidebar, live stats, hotkeys config, recording HUD, etc., without
+# device sidebar, live stats, hotkeys config, etc., without
 # a webview.
 include(FetchContent)
 FetchContent_Declare(
@@ -325,7 +325,6 @@ add_executable(airplay-windows
     src/airplay/reverse_channel.cpp
     src/airplay/routes.cpp
     src/video/h264_decoder.cpp
-    src/video/video_recorder.cpp
     ${HLS_PLAYER_SRC}
     src/video/video_renderer.cpp
     src/audio/audio_receiver.cpp
