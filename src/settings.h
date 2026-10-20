@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace ap::airplay { struct LiveSettings; }
 
@@ -19,8 +20,22 @@ struct PersistentSettings {
 };
 
 std::filesystem::path settings_path();
-PersistentSettings  load_settings();
-void                save_settings(const PersistentSettings& s);
-PersistentSettings  snapshot(const ap::airplay::LiveSettings& live);
+void apply_settings(const PersistentSettings& s, ap::airplay::LiveSettings& live);
+
+// FastXR owns this file. Create it only when missing; never overwrite it on exit.
+class SettingsFile {
+public:
+    explicit SettingsFile(std::filesystem::path path = settings_path());
+    PersistentSettings load();
+    void create_if_missing(const PersistentSettings& defaults);
+    bool poll(ap::airplay::LiveSettings& live);
+
+private:
+    std::filesystem::path path_;
+    PersistentSettings settings_;
+    std::string applied_contents_;
+    std::string pending_contents_;
+    bool have_pending_ = false;
+};
 
 } // namespace ap

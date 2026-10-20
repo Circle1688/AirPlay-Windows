@@ -55,7 +55,7 @@ public:
 
     // Initialise SDL, create the window at a default size, start the
     // rendering thread. Returns false on SDL failure.
-    bool start(const std::string& title = "AirPlay-Windows");
+    bool start(const std::string& title = "FastXR-AirPlay");
 
     // Tell the thread to exit, join it, tear down SDL.
     void stop();
@@ -142,7 +142,7 @@ public:
     // iPhone is currently streaming. Thread-safe. Call once at startup.
     void set_idle_info(const std::string& name, const std::string& ip);
 
-    // What the overlay's DEVICES sidebar shows. Set/cleared from the
+    // Active-device details shown in the toolbar. Set/cleared from the
     // RTSP layer when SETUP / POST /play / TEARDOWN happen. Single
     // active session per receiver — multi-device support comes later.
     struct DeviceInfo {
@@ -156,10 +156,8 @@ public:
     void clear_active_device();
     bool active_device_snapshot(DeviceInfo& out) const;
 
-    // Hand the renderer a (non-owning) pointer to the user-tunable
-    // settings. The OPTIONS panel reads/writes these directly so
-    // resolution / HEVC toggles take effect on the next iPhone
-    // /info request without a process restart.
+    // Non-owning shared settings. The main thread loads external FastXR edits;
+    // the renderer applies window and VSYNC changes on its own thread.
     void set_live_settings(ap::airplay::LiveSettings* live);
 
     // Wire the toolbar "Disconnect" button. Invoked from the render
@@ -272,10 +270,8 @@ private:
     // EMA-smoothed for status bar readability.
     std::atomic<float>         pipeline_latency_ms_ema_{0.0f};
 
-    // Non-owning pointer to the shared user-tunable settings; read
-    // and written on the render thread (the only place ImGui UI
-    // runs), but the underlying fields are atomic so the RTSP
-    // server thread reads cleanly from /info handlers.
+    // Non-owning shared settings, updated by the main thread's file poller.
+    // Atomics also allow window hotkeys and the RTSP handlers to access them.
     ap::airplay::LiveSettings* live_settings_ = nullptr;
 
     // Set from main(); invoked from the render thread on toolbar

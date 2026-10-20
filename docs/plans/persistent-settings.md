@@ -1,96 +1,63 @@
-# Persistent Settings
+# External FastXR settings
 
-## Problem
+The external FastXR application owns `%LOCALAPPDATA%\FastXR\settings.ini`.
+The receiver displays a full-width video stage with a toolbar and status bar;
+there are no device or settings side panels.
 
-Every restart resets LiveSettings to hardcoded defaults (2560x1440, software decoder, etc.). Users must reconfigure resolution and decoder mode each launch.
+## Lifecycle
 
-## Design Decisions
+1. Load the new file. If it does not exist, load the old
+   `%APPDATA%\AirPlay-Windows\settings.ini` as a migration source.
+2. If resolution is absent, detect it with `SDL_GetCurrentDisplayMode()`,
+   falling back to 2560x1440.
+3. Initialize the new file using exclusive creation, preserving an existing
+   file even if the external application created it during startup.
+4. Apply CLI overrides to the initial runtime values.
+5. Poll the file from the main thread every 200 ms. Require the same contents
+   on two consecutive polls before publishing a validated update.
+6. Never save the runtime settings over the external file on shutdown.
 
-| Decision | Choice |
-|---|---|
-| **Scope** | All 9 LiveSettings fields: mirror_width, mirror_height, hevc_enabled, max_fps, refresh_rate, mirror_hwaccel, vsync_enabled, fullscreen, chromeless |
-| **File location** | `%APPDATA%/AirPlay-Windows/settings.ini` (Win32 `SHGetKnownFolderPath(FOLDERID_RoamingAppData)`, with a Unicode `std::filesystem::path`) |
-| **Format** | INI-style key=value (no library dependency, ~50 lines parser) |
-| **Save trigger** | On app exit only (snapshot LiveSettings in shutdown path) |
-| **First-run default** | Auto-detect monitor resolution via `SDL_GetCurrentDisplayMode()` when no settings file exists |
-| **CLI vs saved** | CLI flags override saved settings; saved settings are the fallback when no CLI flag is given |
-| **Cross-platform** | Windows-only (`#if defined(_WIN32)`). Linux builds skip persistence. |
-| **Identity key** | Unchanged — stays in working directory |
+`SettingsFile` owns the last accepted values and file contents. It compares
+contents rather than timestamps to detect replacement even when timestamps
+are preserved. Empty, locked, missing and invalid files keep the last accepted
+values. Parsing updates a candidate snapshot first so an invalid known value
+cannot publish only part of an update. Missing keys retain their previous
+values; unknown keys are ignored. UTF-8 BOM, CRLF, surrounding whitespace and
+whole-line `#` / `;` comments are supported.
 
-## File Format
+External writers should write a complete temporary file beside `settings.ini`
+and atomically replace the destination. Waiting for two equal snapshots reduces
+ordinary truncate/write glitches but cannot distinguish a valid partial file
+from an intentional update if a writer pauses for longer than the debounce.
 
-```ini
-mirror_width=3440
-mirror_height=1440
-hevc_enabled=1
-max_fps=60
-refresh_rate=60
-mirror_hwaccel=1
-vsync_enabled=1
-fullscreen=0
-chromeless=0
-```
+## Fields
 
-## Implementation
+| Key | Range | Application |
+|---|---|---|
+| `mirror_width` | 320–7680 | Next AirPlay connection |
+| `mirror_height` | 240–4320 | Next AirPlay connection |
+| `hevc_enabled` | 0 or 1 | Next AirPlay connection |
+| `max_fps` | 1–60 | Next AirPlay connection |
+| `refresh_rate` | 1–60 | Next AirPlay connection |
+| `mirror_hwaccel` | 0 or 1 | Next AirPlay stream setup |
+| `vsync_enabled` | 0 or 1 | Live on the renderer thread |
+| `fullscreen` | 0 or 1 | Live on the renderer thread |
+| `chromeless` | 0 or 1 | Live on the renderer thread |
 
-### New file: `src/settings.h` / `src/settings.cpp`
+The renderer consumes atomic `LiveSettings` values and performs SDL changes
+on its own thread. Window hotkeys update those atomics for the current session
+without writing the file. An unchanged file does not undo a hotkey; the next
+accepted external update becomes authoritative.
 
-```
-namespace ap {
+The default location uses `FOLDERID_LocalAppData` for the current account.
+Default persistence remains Windows-only. Receiver identity remains in the
+working directory as `identity.key`.
 
-struct PersistentSettings {
-    int  mirror_width    = 0;   // 0 = auto-detect
-    int  mirror_height   = 0;
-    bool hevc_enabled    = true;
-    int  max_fps         = 60;
-    int  refresh_rate    = 60;
-    bool mirror_hwaccel  = false;
-    bool vsync_enabled   = true;
-    bool fullscreen      = false;
-    bool chromeless      = false;
-};
+## Validation
 
-// Returns %APPDATA%/AirPlay-Windows/settings.ini as a native path.
-std::filesystem::path settings_path();
-
-// Load from disk. Returns defaults if file doesn't exist or is malformed.
-PersistentSettings load_settings();
-
-// Write current values to disk.
-void save_settings(const PersistentSettings& s);
-
-// Snapshot LiveSettings into PersistentSettings for saving.
-PersistentSettings snapshot(const ap::airplay::LiveSettings& live);
-
-} // namespace ap
-```
-
-### Changes to `main.cpp`
-
-Load order:
-1. `PersistentSettings saved = load_settings();`
-2. If either saved dimension is missing or invalid: temporarily initialize SDL video, call `SDL_GetCurrentDisplayMode()` to get the native monitor resolution, then shut SDL down. Use 2560x1440 if detection fails.
-3. Parse CLI args — any explicit `--mirror-res` or `--mirror-hwaccel` overrides the saved value.
-4. Seed `LiveSettings` from the merged result.
-5. On shutdown (after the main loop exits, before `renderer.stop()`): `save_settings(snapshot(live_settings));`
-
-### Auto-detect flow (first run)
-
-```
-if (SDL_Init(SDL_INIT_VIDEO) == 0) {
-    SDL_DisplayMode dm{};
-    if (SDL_GetCurrentDisplayMode(0, &dm) == 0) {
-        mirror_w = dm.w;
-        mirror_h = dm.h;
-    }
-    SDL_Quit();
-}
-```
-
-SDL video is shut down after the query; the renderer initializes it on its own thread later.
-
-### Files touched
-
-- **New**: `src/settings.h`, `src/settings.cpp`
-- **Modified**: `src/main.cpp` (load/save integration, early SDL_Init for display detection)
-- **Modified**: `CMakeLists.txt` (add `src/settings.cpp` to sources)
+`ctest --test-dir build -C Release --output-on-failure` runs the settings tests.
+They cover initial creation, non-overwriting behavior, UTF-8/CRLF parsing,
+all runtime fields, malformed and incomplete updates, debounce, locked files,
+atomic replacement with preserved timestamps, deletion/recreation and unchanged
+files preserving window hotkeys. The protocol checks in
+`tools/test_pair_verify.py` validate the AirPlay handshake separately.

@@ -3,94 +3,101 @@
 #include "log.h"
 
 #include <fstream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #include <shlobj.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace ap {
+namespace {
 
-std::filesystem::path settings_path() {
 #if defined(_WIN32)
+std::filesystem::path app_data_path(REFKNOWNFOLDERID folder) {
     PWSTR wide_path = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &wide_path))) {
+    if (FAILED(SHGetKnownFolderPath(folder, 0, nullptr, &wide_path))) {
         CoTaskMemFree(wide_path);
         return {};
     }
-    std::filesystem::path base(wide_path);
+    std::filesystem::path path(wide_path);
     CoTaskMemFree(wide_path);
-    return base / L"AirPlay-Windows" / L"settings.ini";
-#else
-    return {};
+    return path;
+}
 #endif
+
+bool read_file(const std::filesystem::path& path, std::string& contents) {
+    if (path.empty()) return false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+    contents.assign(std::istreambuf_iterator<char>(in), {});
+    return !in.bad();
 }
 
-PersistentSettings load_settings() {
-    PersistentSettings s;
-    const std::filesystem::path path = settings_path();
-    if (path.empty()) return s;
+std::string trim(const std::string& text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+}
 
-    std::ifstream in(path);
-    if (!in.is_open()) return s;
-
+// Validate the whole update before publishing any fields. Missing keys retain
+// their last accepted values; unknown keys belong to the external application.
+bool parse_settings(std::string contents, PersistentSettings& settings) {
+    if (contents.compare(0, 3, "\xEF\xBB\xBF") == 0) contents.erase(0, 3);
+    std::istringstream in(contents);
     std::string line;
+    bool recognized = false;
     while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) return false;
+        const std::string key = trim(line.substr(0, eq));
+        const std::string value = trim(line.substr(eq + 1));
+        int* number = nullptr;
+        bool* flag = nullptr;
+        int minimum = 1;
+        int maximum = 60;
+        if (key == "mirror_width") {
+            number = &settings.mirror_width; minimum = 320; maximum = 7680;
+        } else if (key == "mirror_height") {
+            number = &settings.mirror_height; minimum = 240; maximum = 4320;
+        } else if (key == "max_fps")       number = &settings.max_fps;
+        else if (key == "refresh_rate")   number = &settings.refresh_rate;
+        else if (key == "hevc_enabled")   flag = &settings.hevc_enabled;
+        else if (key == "mirror_hwaccel") flag = &settings.mirror_hwaccel;
+        else if (key == "vsync_enabled")  flag = &settings.vsync_enabled;
+        else if (key == "fullscreen")     flag = &settings.fullscreen;
+        else if (key == "chromeless")     flag = &settings.chromeless;
+        else continue;
 
         try {
-            if      (key == "mirror_width") {
-                const int n = std::stoi(val);
-                if (n >= 320 && n <= 7680) s.mirror_width = n;
+            std::size_t used = 0;
+            const int n = std::stoi(value, &used);
+            if (used != value.size()) return false;
+            if (flag) {
+                if (n != 0 && n != 1) return false;
+                *flag = n != 0;
+            } else {
+                if (n < minimum || n > maximum) return false;
+                *number = n;
             }
-            else if (key == "mirror_height") {
-                const int n = std::stoi(val);
-                if (n >= 240 && n <= 4320) s.mirror_height = n;
-            }
-            else if (key == "hevc_enabled")   s.hevc_enabled   = std::stoi(val) != 0;
-            else if (key == "max_fps") {
-                const int n = std::stoi(val);
-                if (n >= 1 && n <= 60) s.max_fps = n;
-            }
-            else if (key == "refresh_rate") {
-                const int n = std::stoi(val);
-                if (n >= 1 && n <= 60) s.refresh_rate = n;
-            }
-            else if (key == "mirror_hwaccel") s.mirror_hwaccel = std::stoi(val) != 0;
-            else if (key == "vsync_enabled")  s.vsync_enabled  = std::stoi(val) != 0;
-            else if (key == "fullscreen")     s.fullscreen     = std::stoi(val) != 0;
-            else if (key == "chromeless")     s.chromeless     = std::stoi(val) != 0;
-        } catch (...) {
-            LOG_WARN << "settings: malformed value for " << key << "=" << val;
+            recognized = true;
+        } catch (const std::exception&) {
+            return false;
         }
     }
-    LOG_INFO << "settings: loaded from " << path.u8string();
-    return s;
+    return recognized;
 }
 
-void save_settings(const PersistentSettings& s) {
-    const std::filesystem::path path = settings_path();
-    if (path.empty()) return;
-
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        LOG_WARN << "settings: could not create directory: " << ec.message();
-        return;
-    }
-
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.is_open()) {
-        LOG_WARN << "settings: could not write " << path.u8string();
-        return;
-    }
-
+std::string serialize_settings(const PersistentSettings& s) {
+    std::ostringstream out;
     out << "mirror_width="   << s.mirror_width   << '\n'
         << "mirror_height="  << s.mirror_height  << '\n'
         << "hevc_enabled="   << s.hevc_enabled   << '\n'
@@ -100,22 +107,116 @@ void save_settings(const PersistentSettings& s) {
         << "vsync_enabled="  << s.vsync_enabled  << '\n'
         << "fullscreen="     << s.fullscreen     << '\n'
         << "chromeless="     << s.chromeless     << '\n';
-
-    LOG_INFO << "settings: saved to " << path.u8string();
+    return out.str();
 }
 
-PersistentSettings snapshot(const ap::airplay::LiveSettings& live) {
-    PersistentSettings s;
-    s.mirror_width   = live.mirror_width.load(std::memory_order_relaxed);
-    s.mirror_height  = live.mirror_height.load(std::memory_order_relaxed);
-    s.hevc_enabled   = live.hevc_enabled.load(std::memory_order_relaxed);
-    s.max_fps        = live.max_fps.load(std::memory_order_relaxed);
-    s.refresh_rate   = live.refresh_rate.load(std::memory_order_relaxed);
-    s.mirror_hwaccel = live.mirror_hwaccel.load(std::memory_order_relaxed);
-    s.vsync_enabled  = live.vsync_enabled.load(std::memory_order_relaxed);
-    s.fullscreen     = live.fullscreen.load(std::memory_order_relaxed);
-    s.chromeless     = live.chromeless.load(std::memory_order_relaxed);
-    return s;
+} // namespace
+
+std::filesystem::path settings_path() {
+#if defined(_WIN32)
+    const auto base = app_data_path(FOLDERID_LocalAppData);
+    if (!base.empty()) return base / L"FastXR" / L"settings.ini";
+#endif
+    return {};
+}
+
+SettingsFile::SettingsFile(std::filesystem::path path) : path_(std::move(path)) {}
+
+PersistentSettings SettingsFile::load() {
+    std::string contents;
+    if (!read_file(path_, contents)) {
+#if defined(_WIN32)
+        // Preserve existing preferences on the first launch after relocation.
+        std::error_code ec;
+        if (path_ == settings_path() && !std::filesystem::exists(path_, ec) && !ec) {
+            const auto legacy_base = app_data_path(FOLDERID_RoamingAppData);
+            if (!legacy_base.empty()) {
+                read_file(legacy_base / L"AirPlay-Windows" / L"settings.ini", contents);
+            }
+        }
+#endif
+    } else {
+        applied_contents_ = contents;
+    }
+    auto candidate = settings_;
+    if (parse_settings(contents, candidate)) settings_ = candidate;
+    return settings_;
+}
+
+void SettingsFile::create_if_missing(const PersistentSettings& defaults) {
+    settings_ = defaults;
+    if (path_.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(path_.parent_path(), ec);
+    if (ec) {
+        LOG_WARN << "settings: could not create directory: " << ec.message();
+        return;
+    }
+    const std::string contents = serialize_settings(defaults);
+#if defined(_WIN32)
+    // CREATE_NEW prevents clobbering a file created concurrently by FastXR.
+    const HANDLE file = CreateFileW(path_.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                                   nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
+            LOG_WARN << "settings: could not create " << path_.u8string();
+        return;
+    }
+    DWORD written = 0;
+    const bool ok = WriteFile(file, contents.data(), static_cast<DWORD>(contents.size()),
+                              &written, nullptr) && written == contents.size();
+    CloseHandle(file);
+#else
+    const int file = ::open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (file < 0) return;
+    const bool ok = ::write(file, contents.data(), contents.size()) ==
+                    static_cast<ssize_t>(contents.size());
+    ::close(file);
+#endif
+    if (ok) {
+        applied_contents_ = contents;
+        LOG_INFO << "settings: created " << path_.u8string();
+    } else {
+        LOG_WARN << "settings: could not initialize " << path_.u8string();
+    }
+}
+
+bool SettingsFile::poll(ap::airplay::LiveSettings& live) {
+    std::string contents;
+    if (!read_file(path_, contents) || contents.empty() || contents == applied_contents_) {
+        have_pending_ = false;
+        return false;
+    }
+    // Require identical bytes on two polls to skip the usual truncate/write
+    // interval of editors. Content comparison also supports atomic replacement.
+    if (!have_pending_ || contents != pending_contents_) {
+        pending_contents_ = std::move(contents);
+        have_pending_ = true;
+        return false;
+    }
+    have_pending_ = false;
+    applied_contents_ = contents;
+    auto candidate = settings_;
+    if (!parse_settings(contents, candidate)) {
+        LOG_WARN << "settings: ignoring incomplete or invalid update in " << path_.u8string();
+        return false;
+    }
+    settings_ = candidate;
+    apply_settings(settings_, live);
+    LOG_INFO << "settings: reloaded " << path_.u8string();
+    return true;
+}
+
+void apply_settings(const PersistentSettings& s, ap::airplay::LiveSettings& live) {
+    live.mirror_width.store(s.mirror_width, std::memory_order_relaxed);
+    live.mirror_height.store(s.mirror_height, std::memory_order_relaxed);
+    live.hevc_enabled.store(s.hevc_enabled, std::memory_order_relaxed);
+    live.max_fps.store(s.max_fps, std::memory_order_relaxed);
+    live.refresh_rate.store(s.refresh_rate, std::memory_order_relaxed);
+    live.mirror_hwaccel.store(s.mirror_hwaccel, std::memory_order_relaxed);
+    live.vsync_enabled.store(s.vsync_enabled, std::memory_order_relaxed);
+    live.fullscreen.store(s.fullscreen, std::memory_order_relaxed);
+    live.chromeless.store(s.chromeless, std::memory_order_relaxed);
 }
 
 } // namespace ap

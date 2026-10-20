@@ -4,15 +4,13 @@
 
 namespace ap::airplay {
 
-// User-facing knobs that the UI mutates and that downstream code
-// (the /info plist builder, the features-bits assembler) reads at
-// AirPlay handshake time. Lives in a single instance owned by main()
-// and is referenced by both the DeviceContext and the VideoRenderer
-// so the overlay can change values that take effect on the next
-// iPhone /info request — practically: on the next reconnect.
+// Settings loaded from the external FastXR configuration by main(). The
+// DeviceContext reads protocol hints at handshake time; VideoRenderer applies
+// window and VSYNC changes while running. Protocol hints take effect when
+// the iPhone reconnects.
 //
-// Atomics on every field so the writer (UI thread) and the readers
-// (RTSP server thread serving /info) never race; values are
+// Atomics on every field so the main/render threads and RTSP readers never race;
+// values are
 // independent so a torn write across them is harmless.
 struct LiveSettings {
     // Display box advertised in /info — see DeviceContext::mirror_*.

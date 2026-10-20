@@ -424,7 +424,7 @@ Response setup_airplay2_path(ClientSession& session, const Request& req) {
             opts.stream_connection_id = parsed.streams[i].stream_conn_id;
             opts.ct                   = parsed.streams[i].ct;
             opts.sample_rate          = 44100;  // TODO: parse from SETUP when != 44.1k
-            // Prefer the live UI toggle when available; the static
+            // Prefer the live FastXR setting when available; the static
             // session.mirror_hwaccel (seeded from the CLI flag) is
             // the headless fallback.
             opts.mirror_hwaccel = session.live
@@ -442,7 +442,7 @@ Response setup_airplay2_path(ClientSession& session, const Request& req) {
         response.add_streams(parsed.streams, alloc);
     }
 
-    // Tell the overlay's DEVICES sidebar what just connected. iOS
+    // Tell the toolbar what just connected. iOS
     // splits the AirPlay 2 SETUP into multiple requests: a first
     // session-setup carries deviceID / name / model in the plist
     // (no streams), then per-stream SETUPs carry the type / port
@@ -971,7 +971,7 @@ Response handle_play(const DeviceContext& ctx, ClientSession& session,
     if (ctx.hls_player) ctx.hls_player->stop();
     reset_hls_media_state(*hls, pr.url, pr.start_position_seconds);
 
-    // Update the DEVICES sidebar — HLS playback wins over any audio /
+    // Update toolbar device details — HLS playback wins over any audio /
     // mirror kind a prior SETUP may have set, since the iPhone is now
     // pushing video URLs to us. Preserve the name / model picked up
     // from the prior session-setup plist instead of clobbering them.

@@ -1,4 +1,4 @@
-// AirPlay-Windows — first-skeleton entry point.
+// FastXR-AirPlay — first-skeleton entry point.
 //
 // Responsibilities of main():
 //   1. Initialise Winsock (net::global_init).
@@ -72,8 +72,8 @@ std::string default_receiver_name() {
         return std::string(computer_name) + "-AirPlay";
     }
 #endif
-    LOG_WARN << "Could not read computer name; using AirPlay-Windows";
-    return "AirPlay-Windows";
+    LOG_WARN << "Could not read computer name; using FastXR-AirPlay";
+    return "FastXR-AirPlay";
 }
 
 // Pick sensible defaults. The PI and feature bitmask are copied from RPiPlay's
@@ -130,7 +130,8 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    auto saved = ap::load_settings();
+    ap::SettingsFile settings_file;
+    auto saved = settings_file.load();
     if (saved.mirror_width == 0 || saved.mirror_height == 0) {
         saved.mirror_width = 2560;
         saved.mirror_height = 1440;
@@ -200,7 +201,7 @@ int main(int argc, char** argv) {
             // future unknown-arg paths don't trip on it.
         } else if (arg == "--help" || arg == "-h") {
             std::puts(
-                "AirPlay-Windows [--log] [--hls-proxy-playback]\n"
+                "FastXR-AirPlay [--log] [--hls-proxy-playback]\n"
                 "                [--mirror-res WxH] [--mirror-hwaccel]\n"
                 "  --log / --verbose     print init/runtime logs to stderr\n"
                 "                        (off by default in the released\n"
@@ -235,22 +236,16 @@ int main(int argc, char** argv) {
     LOG_INFO << "Mirror decoder default: "
              << (mirror_hwaccel
                    ? "GPU hwaccel (--mirror-hwaccel; cuvid -> D3D11VA cascade)"
-                   : "software libavcodec (toggle GPU in OPTIONS panel)");
+                   : "software libavcodec (configured in FastXR/settings.ini)");
 
-    // Live-mutable settings exposed to the overlay UI. Seed from the
-    // CLI defaults; the UI thread can change values at runtime, and
-    // /info reads them on every iPhone handshake (so changes take
-    // effect on the next reconnect).
+    // FastXR owns the file. Initialize only when missing and monitor edits.
+    // CLI flags override startup values until the next external file update.
+    settings_file.create_if_missing(saved);
     ap::airplay::LiveSettings live_settings;
+    ap::apply_settings(saved, live_settings);
     live_settings.mirror_width.store(mirror_w);
     live_settings.mirror_height.store(mirror_h);
-    live_settings.hevc_enabled.store(saved.hevc_enabled);
-    live_settings.max_fps.store(saved.max_fps);
-    live_settings.refresh_rate.store(saved.refresh_rate);
     live_settings.mirror_hwaccel.store(mirror_hwaccel);
-    live_settings.vsync_enabled.store(saved.vsync_enabled);
-    live_settings.fullscreen.store(saved.fullscreen);
-    live_settings.chromeless.store(saved.chromeless);
     ctx.live = &live_settings;
     LOG_INFO << "AirPlay Streaming HLS path: "
              << (hls_playback ? "ENABLED (--hls-proxy-playback)"
@@ -267,7 +262,7 @@ int main(int argc, char** argv) {
     ctx.public_key = identity->public_key();
     ctx.identity   = identity.get();
 
-    LOG_INFO << "=== AirPlay-Windows skeleton ===";
+    LOG_INFO << "=== FastXR-AirPlay skeleton ===";
     LOG_INFO << "name="     << ctx.name;
     LOG_INFO << "deviceid=" << ctx.deviceid;
     const std::string local_ip   = ap::net::primary_ipv4();
@@ -282,7 +277,7 @@ int main(int argc, char** argv) {
     // frames once an iPhone connects.
     ap::video::VideoRenderer renderer;
     renderer.set_live_settings(&live_settings);
-    if (!renderer.start("AirPlay-Windows")) {
+    if (!renderer.start("FastXR-AirPlay")) {
         LOG_WARN << "VideoRenderer could not start — running headless";
     }
     // Prefer the v4 address on the idle screen (shorter, more familiar),
@@ -344,6 +339,7 @@ int main(int argc, char** argv) {
     LOG_INFO << "Ready. Close the window or press Ctrl-C to exit.";
     while (!g_stop && !renderer.user_closed()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        settings_file.poll(live_settings);
     }
 
     LOG_INFO << "Shutting down... (g_stop=" << g_stop.load()
@@ -353,7 +349,6 @@ int main(int argc, char** argv) {
     hls_player.stop();
     hls_server.stop();
     server.stop();
-    ap::save_settings(ap::snapshot(live_settings));
     renderer.stop();
     ap::net::global_shutdown();
     return 0;

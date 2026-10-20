@@ -40,13 +40,9 @@ extern "C" {
 namespace ap::video {
 namespace {
 
-// Match the design mockup's 1380x880 reference. The right panel
-// collapses on demand so a portrait phone stream still gets a tall
-// stage when the user shrinks the window.
+// The video stage spans the window width between the toolbar and status bar.
 constexpr int kDefaultWinWidth  = 1280;
 constexpr int kDefaultWinHeight = 880;
-constexpr int kSidebarWidth     = 280;
-constexpr int kOptionsWidth     = 380;
 constexpr int kStatusBarHeight  = 28;
 constexpr int kToolbarHeight    = 40;
 
@@ -777,7 +773,7 @@ void VideoRenderer::run(const std::string& title) {
     // Persistent UI toggles (struct lifted to file scope above so
     // the SDL hit-test callback can access it). Defaults match the
     // design mockup (chrome visible). Chromeless mode hides toolbar
-    // + sidebar + options + status bar so the AirPlay video fills
+    // + status bar so the AirPlay video fills
     // the whole window; unlike fullscreen this stays a regular
     // resizable window. F11 / double-click toggle real fullscreen,
     // H toggles chromeless, ESC peels back layers.
@@ -788,13 +784,19 @@ void VideoRenderer::run(const std::string& title) {
 
     bool fullscreen = live_settings_
         ? live_settings_->fullscreen.load(std::memory_order_relaxed) : false;
-    auto toggle_fullscreen = [&]() {
-        fullscreen = !fullscreen;
+    auto set_fullscreen = [&](bool enabled) {
+        fullscreen = enabled;
         SDL_SetWindowFullscreen(window,
             fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
         SDL_ShowCursor(fullscreen ? SDL_DISABLE : SDL_ENABLE);
         if (live_settings_)
             live_settings_->fullscreen.store(fullscreen, std::memory_order_relaxed);
+    };
+    auto toggle_fullscreen = [&]() { set_fullscreen(!fullscreen); };
+    auto set_chromeless = [&](bool enabled) {
+        ui.chromeless = enabled;
+        if (live_settings_)
+            live_settings_->chromeless.store(enabled, std::memory_order_relaxed);
     };
     if (fullscreen) {
         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -881,6 +883,14 @@ void VideoRenderer::run(const std::string& title) {
     };
 
     while (running_.load()) {
+        // SDL window changes must run here, on the renderer thread. FastXR's
+        // settings poller only publishes the requested state through atomics.
+        if (live_settings_) {
+            const bool requested_fullscreen =
+                live_settings_->fullscreen.load(std::memory_order_relaxed);
+            if (requested_fullscreen != fullscreen) set_fullscreen(requested_fullscreen);
+            ui.chromeless = live_settings_->chromeless.load(std::memory_order_relaxed);
+        }
         // Sync the SDL window border to the chromeless toggle. In
         // fullscreen the border is irrelevant (SDL handles it via
         // the fullscreen flag). Otherwise: borderless when the user
@@ -916,8 +926,6 @@ void VideoRenderer::run(const std::string& title) {
                                   saved_window_w, saved_window_h);
             }
             prev_chromeless = ui.chromeless;
-            if (live_settings_)
-                live_settings_->chromeless.store(ui.chromeless, std::memory_order_relaxed);
             prev_video_w    = video_tex_w;
             prev_video_h    = video_tex_h;
         } else if (video_changed) {
@@ -964,7 +972,7 @@ void VideoRenderer::run(const std::string& title) {
                         // ESC peels back layers in order:
                         // fullscreen first, then chromeless, then quit.
                         if (fullscreen)         toggle_fullscreen();
-                        else if (ui.chromeless) ui.chromeless = false;
+                        else if (ui.chromeless) set_chromeless(false);
                         else { closed_ = true; running_ = false; }
                         break;
                     case SDLK_f:
@@ -972,7 +980,7 @@ void VideoRenderer::run(const std::string& title) {
                         toggle_fullscreen();
                         break;
                     case SDLK_h:
-                        ui.chromeless = !ui.chromeless;
+                        set_chromeless(!ui.chromeless);
                         break;
                     default: break;
                 }
@@ -1210,20 +1218,18 @@ void VideoRenderer::run(const std::string& title) {
         const int full_w = win_w;
         const int full_h = win_h;
 
-        // Layout: top toolbar, sidebar (left), options panel (right),
-        // status bar (bottom). Two ways to drop the chrome:
+        // Layout: top toolbar and bottom status bar, with a full-width stage.
+        // Two ways to drop the chrome:
         //   - fullscreen: SDL_WINDOW_FULLSCREEN_DESKTOP, no chrome
         //   - chromeless: regular resizable window, no chrome
         // Both collapse all insets to 0 so the video stage covers the
         // whole window, and both skip the ImGui panel block below.
         const bool no_chrome = fullscreen || ui.chromeless;
-        const int options_w     = no_chrome ? 0 : kOptionsWidth;
         const int chrome_top    = no_chrome ? 0 : kToolbarHeight;
         const int chrome_bottom = no_chrome ? 0 : kStatusBarHeight;
-        const int chrome_left   = no_chrome ? 0 : kSidebarWidth;
-        const int stage_x = chrome_left;
+        const int stage_x = 0;
         const int stage_y = chrome_top;
-        const int stage_w = std::max(0, full_w - chrome_left - options_w);
+        const int stage_w = full_w;
         const int stage_h = std::max(0, full_h - chrome_top - chrome_bottom);
 
         // Override win_w/win_h locally so the existing video-fit and
@@ -1235,8 +1241,7 @@ void VideoRenderer::run(const std::string& title) {
 
         // Clear the whole window first (background under all panels),
         // then clip subsequent SDL draws to the stage rect via
-        // viewport — the ImGui panels will paint over the cleared
-        // sides afterwards.
+        // viewport — ImGui draws the toolbar and status bar afterwards.
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         const SDL_Rect stage_rect{stage_x, stage_y, stage_w, stage_h};
@@ -1370,7 +1375,7 @@ void VideoRenderer::run(const std::string& title) {
             draw_centered(idle_msg_tex,  idle_msg_w,  idle_msg_h,  y_cursor);
         }
 
-        // Restore full-window viewport so ImGui can draw the side panels
+        // Restore full-window viewport so ImGui can draw the toolbar
         // and status bar across the whole window. win_w / win_h were
         // overridden to stage dims for the SDL drawing pass; bring them
         // back to the full window size for the ImGui pass.
@@ -1380,7 +1385,7 @@ void VideoRenderer::run(const std::string& title) {
 
         // --- Dear ImGui overlay pass ---------------------------------
         // Runs every frame after the SDL_Render* video pass. The fixed
-        // panels (sidebar / options / status) cover everything outside
+        // bars (toolbar / status) cover everything outside
         // the stage rect; the stage rect itself stays untouched so the
         // video / cover / idle texture is still visible.
         ImGui_ImplSDLRenderer2_NewFrame();
@@ -1395,13 +1400,11 @@ void VideoRenderer::run(const std::string& title) {
 
         const float status_bar_h = static_cast<float>(kStatusBarHeight);
         const float toolbar_h    = static_cast<float>(kToolbarHeight);
-        const float side_bar_w   = static_cast<float>(kSidebarWidth);
-        const float opts_bar_w   = static_cast<float>(kOptionsWidth);
         const float fw           = static_cast<float>(full_w);
         const float fh           = static_cast<float>(full_h);
 
         // Fullscreen and chromeless both hide the entire chrome
-        // (toolbar / sidebar / options / status bar). Fullscreen also
+        // (toolbar / status bar). Fullscreen also
         // takes the whole screen via SDL_WINDOW_FULLSCREEN_DESKTOP;
         // chromeless keeps a regular resizable window with just the
         // video. F11/F/double-click toggles fullscreen, H toggles
@@ -1416,7 +1419,7 @@ void VideoRenderer::run(const std::string& title) {
                          kPanelFlags | ImGuiWindowFlags_NoScrollbar)) {
             ImGui::PushStyleColor(ImGuiCol_Text,
                                   ImVec4(0.92f, 0.93f, 0.95f, 1.0f));
-            ImGui::TextUnformatted("AirPlay-Windows");
+            ImGui::TextUnformatted("FastXR-AirPlay");
             ImGui::PopStyleColor();
             ImGui::SameLine();
             ImGui::TextDisabled(" | ");
@@ -1471,7 +1474,7 @@ void VideoRenderer::run(const std::string& title) {
                 ImGui::SameLine();
             }
             if (ImGui::Button("Hide UI", ImVec2(btn_hide_w, 0))) {
-                ui.chromeless = true;
+                set_chromeless(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Hide all panels (H or ESC to restore)");
@@ -1484,275 +1487,6 @@ void VideoRenderer::run(const std::string& title) {
         }
         ImGui::End();
         ImGui::PopStyleVar();
-
-        // ---- Left sidebar : DEVICES -------------------------------
-        ImGui::SetNextWindowPos(ImVec2(0.0f, toolbar_h));
-        ImGui::SetNextWindowSize(ImVec2(side_bar_w, fh - toolbar_h - status_bar_h));
-        if (ImGui::Begin("##devices_sidebar", nullptr, kPanelFlags)) {
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                                  ImVec4(0.65f, 0.68f, 0.72f, 1.0f));
-            ImGui::TextUnformatted("DEVICES");
-            ImGui::PopStyleColor();
-            ImGui::Separator();
-            // Wrap to the panel width so long device names / model
-            // strings don't run off the right edge of the sidebar.
-            ImGui::PushTextWrapPos(0.0f);
-            const bool video_streaming =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - last_video_frame_time).count() < 1500;
-            if (has_active_dev) {
-                // Pulsing dot in front of the device name when the
-                // pipeline is actively producing frames; muted dot
-                // otherwise (paired but quiet).
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                const ImVec2 p = ImGui::GetCursorScreenPos();
-                const float t = video_streaming
-                    ? 0.55f + 0.45f * std::sin(
-                        static_cast<float>(ImGui::GetTime()) * 3.5f)
-                    : 0.30f;
-                const ImU32 dot = video_streaming
-                    ? IM_COL32(80, 220, 130,
-                               static_cast<int>(t * 255.0f))
-                    : IM_COL32(170, 170, 170, 180);
-                dl->AddCircleFilled(ImVec2(p.x + 6, p.y + 9), 4.5f, dot);
-                ImGui::Dummy(ImVec2(16, 18));
-                ImGui::SameLine();
-                // Prefer the human name if iOS sent one in the
-                // session-setup plist; fall back to peer IP otherwise.
-                const char* primary =
-                    !active_dev.name.empty() ? active_dev.name.c_str()
-                  : !active_dev.peer_ip.empty() ? active_dev.peer_ip.c_str()
-                  : "iPhone";
-                ImGui::TextUnformatted(primary);
-                ImGui::TextDisabled("  %s", active_dev.kind.c_str());
-                if (!active_dev.name.empty() && !active_dev.peer_ip.empty()) {
-                    // Show the IP underneath when we have a name — the
-                    // name and the IP together pinpoint the device on
-                    // the network.
-                    ImGui::TextDisabled("  %s", active_dev.peer_ip.c_str());
-                }
-                if (!active_dev.model.empty()) {
-                    ImGui::TextDisabled("  %s", active_dev.model.c_str());
-                }
-                if (!active_dev.session_id.empty()) {
-                    // Truncate the AirPlay session id to a short
-                    // identifier — the full string is just noise.
-                    const std::string short_id =
-                        active_dev.session_id.size() > 8
-                          ? active_dev.session_id.substr(0, 8) + "…"
-                          : active_dev.session_id;
-                    ImGui::TextDisabled("  sid %s", short_id.c_str());
-                }
-            } else {
-                ImGui::TextDisabled("No device connected");
-                ImGui::Spacing();
-                ImGui::TextDisabled(
-                    "Open AirPlay on iOS and pick this "
-                    "receiver to start mirroring.");
-            }
-            ImGui::PopTextWrapPos();
-        }
-        ImGui::End();
-
-        // ---- Right options panel ----------------------------------
-        // Always shown when chrome is on (chromeless / fullscreen
-        // already collapse the surrounding `if (!fullscreen ...)`
-        // block, so reaching here means the user wants chrome).
-        {
-            ImGui::SetNextWindowPos(ImVec2(fw - opts_bar_w, toolbar_h));
-            ImGui::SetNextWindowSize(ImVec2(opts_bar_w, fh - toolbar_h - status_bar_h));
-            if (ImGui::Begin("##options_panel", nullptr, kPanelFlags)) {
-                ImGui::PushStyleColor(ImGuiCol_Text,
-                                      ImVec4(0.65f, 0.68f, 0.72f, 1.0f));
-                ImGui::TextUnformatted("OPTIONS");
-                ImGui::PopStyleColor();
-                ImGui::Separator();
-                // Wrap descriptive text to the panel width so long
-                // hint strings (VSYNC / GPU decoder explanations, etc.)
-                // stay inside the panel instead of running off-screen.
-                ImGui::PushTextWrapPos(0.0f);
-                if (ImGui::CollapsingHeader("Mirror Resolution",
-                        ImGuiTreeNodeFlags_DefaultOpen)) {
-                    if (live_settings_) {
-                        struct Preset { const char* label; int w; int h; };
-                        static const Preset presets[] = {
-                            {"1920x1080  (Full HD)",      1920, 1080},
-                            {"2560x1440  (QHD, default)", 2560, 1440},
-                            {"2868x2868  (iPhone native)",2868, 2868},
-                            {"3840x2160  (4K UHD)",       3840, 2160},
-                        };
-                        int cur_w = live_settings_->mirror_width.load();
-                        int cur_h = live_settings_->mirror_height.load();
-                        int sel = -1;   // -1 = none of the presets match
-                        for (int i = 0; i < (int)IM_ARRAYSIZE(presets); ++i) {
-                            if (presets[i].w == cur_w && presets[i].h == cur_h) {
-                                sel = i; break;
-                            }
-                        }
-                        // Custom mode is sticky once chosen so the
-                        // inputs don't disappear the moment the user
-                        // pauses on a partial value that happens to
-                        // match a preset (eg typing 1920 then 1080).
-                        // Reset to false whenever a preset is chosen
-                        // explicitly, or auto-set when current values
-                        // don't match any preset (eg --mirror-res CLI).
-                        static bool custom_mode = false;
-                        if (sel < 0) custom_mode = true;
-
-                        char preview_buf[48];
-                        const char* preview;
-                        if (custom_mode) {
-                            std::snprintf(preview_buf, sizeof(preview_buf),
-                                          "Custom: %dx%d", cur_w, cur_h);
-                            preview = preview_buf;
-                        } else {
-                            preview = presets[sel].label;
-                        }
-
-                        if (ImGui::BeginCombo("##mirror_res", preview)) {
-                            for (int i = 0; i < (int)IM_ARRAYSIZE(presets); ++i) {
-                                const bool is_sel =
-                                    (!custom_mode && sel == i);
-                                if (ImGui::Selectable(presets[i].label,
-                                                      is_sel)) {
-                                    custom_mode = false;
-                                    live_settings_->mirror_width.store(presets[i].w);
-                                    live_settings_->mirror_height.store(presets[i].h);
-                                }
-                                if (is_sel) ImGui::SetItemDefaultFocus();
-                            }
-                            ImGui::Separator();
-                            if (ImGui::Selectable("Custom...", custom_mode)) {
-                                custom_mode = true;
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        if (custom_mode) {
-                            // Width / height inputs that commit live
-                            // (no Enter) as soon as the value falls in
-                            // the accepted range. While the user is
-                            // typing a partial number outside the
-                            // range nothing is written — so 2 / 25 /
-                            // 256 don't get applied on the way to 2560.
-                            static int  width_buf    = 0;
-                            static int  height_buf   = 0;
-                            static bool width_active = false;
-                            static bool height_active= false;
-                            if (!width_active)  width_buf  = cur_w;
-                            if (!height_active) height_buf = cur_h;
-
-                            ImGui::SetNextItemWidth(80);
-                            ImGui::InputInt("Width##custom",
-                                            &width_buf, 0, 0);
-                            width_active = ImGui::IsItemActive();
-                            ImGui::SameLine();
-                            ImGui::SetNextItemWidth(80);
-                            ImGui::InputInt("Height##custom",
-                                            &height_buf, 0, 0);
-                            height_active = ImGui::IsItemActive();
-
-                            if (width_buf  >= 320 && width_buf  <= 7680 &&
-                                width_buf  != cur_w) {
-                                live_settings_->mirror_width.store(width_buf);
-                            }
-                            if (height_buf >= 240 && height_buf <= 4320 &&
-                                height_buf != cur_h) {
-                                live_settings_->mirror_height.store(height_buf);
-                            }
-                            ImGui::TextDisabled(
-                                "Range: 320-7680 x 240-4320");
-                        }
-                        ImGui::TextDisabled("Applies on next iPhone connection");
-                    } else {
-                        ImGui::TextDisabled("(LiveSettings not wired)");
-                    }
-                }
-                if (ImGui::CollapsingHeader("Frame rate")) {
-                    if (live_settings_) {
-                        // iOS effectively takes the min of maxFPS and
-                        // refreshRate, so two separate sliders meant
-                        // the same thing twice. Drive both atomics
-                        // from a single "Frame rate cap" knob and
-                        // keep the underlying fields in lockstep.
-                        int cap = live_settings_->max_fps.load();
-                        ImGui::SetNextItemWidth(200);
-                        if (ImGui::SliderInt("Frame rate cap",
-                                             &cap, 1, 60, "%d fps")) {
-                            live_settings_->max_fps.store(cap);
-                            live_settings_->refresh_rate.store(cap);
-                        }
-                        ImGui::TextDisabled(
-                            "iOS caps mirror at 60 fps regardless of hint;"
-                            " lower values force a deterministic cadence.");
-                        ImGui::TextDisabled("Applies on next iPhone connection");
-                    } else {
-                        ImGui::TextDisabled("(LiveSettings not wired)");
-                    }
-                }
-                if (ImGui::CollapsingHeader("Compression",
-                        ImGuiTreeNodeFlags_DefaultOpen)) {
-                    if (live_settings_) {
-                        bool hevc = live_settings_->hevc_enabled.load();
-                        if (ImGui::Checkbox("Allow HEVC (H.265)", &hevc)) {
-                            live_settings_->hevc_enabled.store(hevc);
-                        }
-                        ImGui::TextDisabled(
-                            hevc
-                              ? "iOS may pick HEVC at high resolution"
-                              : "Force H.264 (more CPU, more bandwidth)");
-                        ImGui::TextDisabled("Applies on next iPhone connection");
-                    } else {
-                        ImGui::TextDisabled("(LiveSettings not wired)");
-                    }
-                }
-                if (ImGui::CollapsingHeader("Mirror Decoder",
-                        ImGuiTreeNodeFlags_DefaultOpen)) {
-                    if (live_settings_) {
-                        bool hw = live_settings_->mirror_hwaccel.load();
-                        if (ImGui::Checkbox("GPU decode (cuvid / D3D11VA)",
-                                            &hw)) {
-                            live_settings_->mirror_hwaccel.store(hw);
-                        }
-                        ImGui::TextDisabled(
-                            hw
-                              ? "GPU pipeline: NVDEC cuvid (NVIDIA) ->"
-                                " D3D11VA fallback."
-                              : "Software libavcodec - fastest end-to-end"
-                                " latency on single-stream mirror.");
-                        ImGui::TextDisabled("Applies on next iPhone connection");
-
-                        ImGui::Separator();
-
-                        bool vsync = live_settings_->vsync_enabled.load();
-                        if (ImGui::Checkbox("VSYNC", &vsync)) {
-                            live_settings_->vsync_enabled.store(vsync);
-                        }
-                        ImGui::TextDisabled(
-                            vsync
-                              ? "Sync presents to monitor refresh."
-                              : "Present immediately (lower latency,"
-                                " visible tearing on fast pans).");
-                        ImGui::TextDisabled("Applies live (no reconnect needed)");
-                    } else {
-                        ImGui::TextDisabled("(LiveSettings not wired)");
-                    }
-                }
-                if (ImGui::CollapsingHeader("Network",
-                        ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::TextDisabled("RTSP   :7000");
-                    ImGui::TextDisabled("HLS    :7100");
-                    ImGui::TextDisabled("mDNS   advertising");
-                }
-                if (ImGui::CollapsingHeader("Hotkeys")) {
-                    ImGui::BulletText("F / F11 / double-click  Toggle fullscreen");
-                    ImGui::BulletText("H       Hide / show the interface");
-                    ImGui::BulletText("Esc     Exit fullscreen / show UI / quit");
-                }
-                ImGui::PopTextWrapPos();
-            }
-            ImGui::End();
-        }
 
         // ---- Bottom status bar ------------------------------------
         ImGui::SetNextWindowPos(ImVec2(0.0f, fh - status_bar_h));
@@ -1842,7 +1576,7 @@ void VideoRenderer::run(const std::string& title) {
 
         // Pulsing "Waiting for AirPlay" ring centered in the stage when
         // no fresh video frame is on screen. Drawn to the background
-        // list so the side panels still cover it where they overlap.
+        // list so the toolbar and status bar cover it where they overlap.
         {
             const bool video_streaming_idle =
                 std::chrono::duration_cast<std::chrono::milliseconds>(

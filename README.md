@@ -1,4 +1,4 @@
-# AirPlay Windows Receiver
+# FastXR-AirPlay
 
 Native AirPlay 2 receiver (mirror + RAOP audio) for Windows, ported
 from [UxPlay](https://github.com/FDH2/UxPlay) (GPL-3.0). 100 %
@@ -48,7 +48,7 @@ native Windows stack — no Bonjour SDK, no Apple runtime dependency.
 | **DAAP metadata (mlit/minm/asar/asal/astm)** | OK    | standalone DMAP parser, `metadata: "Title" - Artist (Album, 234s)` |
 | **ALAC fallback (ct=2)**                     | OK    | 36 B magic cookie + dispatch `AV_CODEC_ID_ALAC` |
 | **Cover + metadata overlay (SDL_ttf)**       | OK    | rendered on the idle stage when audio-only    |
-| **In-app overlay (Dear ImGui)**              | OK    | toolbar / sidebar / options / status bar      |
+| **In-app overlay (Dear ImGui)**              | OK    | toolbar and status bar around a full-width video stage |
 | **Hide UI mode (borderless, draggable)**     | OK    | SDL hit-test edges = resize, video = drag     |
 | **USB Personal Hotspot path**                | OK    | works over the cable subnet, no Wi-Fi needed  |
 | AirPlay Streaming mode (FairPlay Streaming)  | NO    | YouTube / Netflix / ATV+ — out of scope       |
@@ -108,14 +108,14 @@ verification): [`docs/FAIRPLAY.md`](docs/FAIRPLAY.md).
 ## Run
 
 ```powershell
-build\Release\airplay-windows.exe
+build\Release\FastXR-AirPlay.exe
 ```
 
 The released binary is silent by default (no console pops up). For
 init / runtime logs, pass `--log` (or `--verbose`):
 
 ```powershell
-build\Release\airplay-windows.exe --log
+build\Release\FastXR-AirPlay.exe --log
 ```
 
 Expected log lines at startup with `--log`:
@@ -145,6 +145,46 @@ The toolbar also exposes a **Disconnect** button (only visible when a
 session is active) that drops the current AirPlay client and returns
 the renderer to the idle "Waiting for AirPlay" screen.
 
+### External FastXR settings
+
+Settings are managed by an external application in
+`%LOCALAPPDATA%\FastXR\settings.ini` (for the Administrator account:
+`C:\Users\Administrator\AppData\Local\FastXR\settings.ini`). The receiver
+creates this file only when it is missing. On the first launch after this
+change, existing `%APPDATA%\AirPlay-Windows\settings.ini` preferences are
+copied into the new file if available. The receiver never saves changes over
+the file on exit. The left device sidebar and right settings panel are removed.
+
+```ini
+mirror_width=1920
+mirror_height=1080
+hevc_enabled=1
+max_fps=60
+refresh_rate=60
+mirror_hwaccel=0
+vsync_enabled=1
+fullscreen=0
+chromeless=0
+```
+
+The receiver checks for external edits every 200 ms and applies a file after
+two identical reads, normally within 400 ms. `vsync_enabled`, `fullscreen`
+and `chromeless` apply while running. Resolution, FPS, HEVC and hardware
+decoding settings apply to the next AirPlay connection; reconnect the phone
+to use them. Window shortcuts change the current session only.
+
+Boolean values must be `0` or `1`. Width accepts 320–7680, height 240–4320,
+and both FPS fields 1–60. UTF-8 with or without a BOM, Windows line endings,
+spaces around `=`, and `#` / `;` comment lines are supported. Missing keys
+keep their last accepted values, and unknown keys are ignored. An empty,
+unreadable or invalid update keeps the last accepted settings. For reliable
+external writes, write a complete temporary file in the same directory and
+atomically replace `settings.ini`.
+
+CLI flags override the initial file values until the next accepted external
+update. If no configuration exists, the initial resolution is detected from
+the monitor, with a 2560×1440 fallback.
+
 ## AirPlay over USB-C cable (no Wi-Fi)
 
 An iPhone plugged in via USB can route AirPlay through the cable —
@@ -169,7 +209,7 @@ an iOS toggle and an Apple driver on Windows.
 3. On Windows, in the network menu, a new **`Apple Mobile Device
    Ethernet`** connection appears with an IP on the
    `172.20.10.0/24` subnet.
-4. Run `airplay-windows.exe --log` — at startup the logs announce
+4. Run `FastXR-AirPlay.exe --log` — at startup the logs announce
    `mDNS registered: ... 172.20.10.x`.
 5. On the iPhone: Control Center -> Screen Mirroring ->
    `<computer-name>-AirPlay` shows up **even with no shared Wi-Fi**.

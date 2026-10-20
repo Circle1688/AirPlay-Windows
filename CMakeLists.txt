@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(airplay-windows VERSION 0.1.0 LANGUAGES C CXX)
+project(FastXR-AirPlay VERSION 0.1.0 LANGUAGES C CXX)
+
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -268,7 +270,7 @@ endif()
 # Pinned vendored copy of Dear ImGui + the SDL2 / SDLRenderer2 backends. We
 # draw directly over the SDL renderer — zero IPC, zero frame copy, runs in
 # the same thread/GPU context as the video texture. The overlay gives us a
-# device sidebar, live stats, hotkeys config, etc., without
+# toolbar and live status bar without
 # a webview.
 include(FetchContent)
 FetchContent_Declare(
@@ -297,7 +299,7 @@ if(MSVC)
 endif()
 
 # ---- Sources ------------------------------------------------------------------
-add_executable(airplay-windows
+add_executable(FastXR-AirPlay
     src/main.cpp
     src/log.cpp
     src/settings.cpp
@@ -334,14 +336,27 @@ add_executable(airplay-windows
     src/usb/usb_supervisor.cpp
 )
 
-target_include_directories(airplay-windows PRIVATE src)
-target_link_libraries(airplay-windows PRIVATE OpenSSL::Crypto ${FFMPEG_TARGETS} ${SDL2_TARGET} ${SDL2_TTF_TARGET} imgui)
+target_include_directories(FastXR-AirPlay PRIVATE src)
+
+if(BUILD_TESTING)
+    add_executable(airplay-settings-tests
+        tests/settings_test.cpp src/settings.cpp src/log.cpp)
+    target_include_directories(airplay-settings-tests PRIVATE src)
+    set_target_properties(airplay-settings-tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    if(WIN32)
+        target_link_libraries(airplay-settings-tests PRIVATE shell32 ole32)
+    endif()
+    add_test(NAME external-settings
+        COMMAND airplay-settings-tests "${CMAKE_CURRENT_BINARY_DIR}/settings-test-data")
+endif()
+target_link_libraries(FastXR-AirPlay PRIVATE OpenSSL::Crypto ${FFMPEG_TARGETS} ${SDL2_TARGET} ${SDL2_TTF_TARGET} imgui)
 if(_use_gst AND GSTREAMER_FOUND)
-    target_link_libraries(airplay-windows PRIVATE PkgConfig::GSTREAMER)
-    target_compile_definitions(airplay-windows PRIVATE HAVE_GSTREAMER_HLS=1)
+    target_link_libraries(FastXR-AirPlay PRIVATE PkgConfig::GSTREAMER)
+    target_compile_definitions(FastXR-AirPlay PRIVATE HAVE_GSTREAMER_HLS=1)
 endif()
 if(DEFINED FFMPEG_INCLUDE_DIRS_OK)
-    target_include_directories(airplay-windows PRIVATE ${FFMPEG_INCLUDE_DIRS_OK})
+    target_include_directories(FastXR-AirPlay PRIVATE ${FFMPEG_INCLUDE_DIRS_OK})
 endif()
 
 # ---- FairPlay SAP blobs (swap-ready) ------------------------------------------
@@ -350,12 +365,12 @@ endif()
 # we link that instead. See docs/FAIRPLAY.md.
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/fairplay_blobs_real.cpp")
     message(STATUS "FairPlay: using provisioned blob (fairplay_blobs_real.cpp)")
-    target_sources(airplay-windows PRIVATE
+    target_sources(FastXR-AirPlay PRIVATE
         third_party/fairplay_blobs_real.cpp)
 else()
     message(STATUS "FairPlay: using zero-filled STUB — iOS handshake will "
                    "fail at /fp-setup until a real blob is provided")
-    target_sources(airplay-windows PRIVATE
+    target_sources(FastXR-AirPlay PRIVATE
         third_party/fairplay_blobs_stub.cpp)
 endif()
 
@@ -371,13 +386,13 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/playfair/playfair.c")
         third_party/playfair/omg_hax.c
         third_party/playfair/modified_md5.c
         third_party/playfair/sap_hash.c)
-    target_sources(airplay-windows PRIVATE ${_playfair_srcs})
+    target_sources(FastXR-AirPlay PRIVATE ${_playfair_srcs})
     # UxPlay's source uses `#include "playfair/playfair.h"` from fairplay_playfair.c
     # and `#include "playfair.h"` from within playfair/*.c, so we expose both.
-    target_include_directories(airplay-windows PRIVATE
+    target_include_directories(FastXR-AirPlay PRIVATE
         third_party
         third_party/playfair)
-    target_compile_definitions(airplay-windows PRIVATE HAVE_PLAYFAIR=1)
+    target_compile_definitions(FastXR-AirPlay PRIVATE HAVE_PLAYFAIR=1)
 
     # Quiet down playfair's legacy-C warnings (intentional byte truncations,
     # unused-variable debug leftovers, a spurious C4701 in modified_md5.c).
@@ -395,8 +410,8 @@ endif()
 
 if(LIBPLIST_TARGET)
     message(STATUS "libplist: linking via ${LIBPLIST_TARGET}")
-    target_link_libraries(airplay-windows PRIVATE ${LIBPLIST_TARGET})
-    target_compile_definitions(airplay-windows PRIVATE HAVE_LIBPLIST=1)
+    target_link_libraries(FastXR-AirPlay PRIVATE ${LIBPLIST_TARGET})
+    target_compile_definitions(FastXR-AirPlay PRIVATE HAVE_LIBPLIST=1)
 else()
     message(FATAL_ERROR
         "libplist not found. Required for the /info binary plist — iOS will "
@@ -410,21 +425,21 @@ if(WIN32)
     # ws2_32: Winsock; iphlpapi: GetAdaptersAddresses; dnsapi: native mDNS;
     # dwmapi: DwmSetWindowAttribute for the Win11 Mica backdrop on the
     # VideoRenderer window.
-    target_link_libraries(airplay-windows PRIVATE
+    target_link_libraries(FastXR-AirPlay PRIVATE
         ws2_32 iphlpapi dnsapi dwmapi
         setupapi shell32 ole32)   # USB enumeration + Lockdown directory lookup
 
     # Released as a GUI app so no empty console window pops up when
     # launched from File Explorer. main() stays the entry point — the
     # /ENTRY override avoids having to add a WinMain stub.
-    set_target_properties(airplay-windows PROPERTIES WIN32_EXECUTABLE TRUE)
+    set_target_properties(FastXR-AirPlay PROPERTIES WIN32_EXECUTABLE TRUE)
     if(MSVC)
-        target_link_options(airplay-windows PRIVATE "/ENTRY:mainCRTStartup")
+        target_link_options(FastXR-AirPlay PRIVATE "/ENTRY:mainCRTStartup")
     endif()
 endif()
 
 # ---- Runtime DLL deployment (Windows) ----------------------------------------
-# Use $<TARGET_RUNTIME_DLLS:airplay-windows> (CMake 3.21+) to copy ONLY
+# Use $<TARGET_RUNTIME_DLLS:FastXR-AirPlay> (CMake 3.21+) to copy ONLY
 # the shared libraries the linker actually depends on transitively —
 # pulls SDL2.dll, SDL2_ttf.dll, avcodec-*.dll, libplist-*.dll,
 # gstreamer-1.0-0.dll, gstapp-*.dll, glib-2.0-0.dll, … without dragging
@@ -438,12 +453,12 @@ endif()
 # its registered plugin path — practically: as long as the user has
 # GStreamer's bin/ on PATH the plugins resolve at startup.
 if(WIN32)
-    add_custom_command(TARGET airplay-windows POST_BUILD
+    add_custom_command(TARGET FastXR-AirPlay POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:airplay-windows>
-            $<TARGET_FILE_DIR:airplay-windows>
+            $<TARGET_RUNTIME_DLLS:FastXR-AirPlay>
+            $<TARGET_FILE_DIR:FastXR-AirPlay>
         COMMAND_EXPAND_LISTS
-        COMMENT "Deploying linked runtime DLLs next to airplay-windows.exe"
+        COMMENT "Deploying linked runtime DLLs next to FastXR-AirPlay.exe"
         VERBATIM)
 endif()
 
@@ -453,8 +468,8 @@ endif()
 if(NOT WIN32 AND PkgConfig_FOUND)
     pkg_check_modules(AVAHI_CLIENT IMPORTED_TARGET avahi-client)
     if(AVAHI_CLIENT_FOUND)
-        target_link_libraries(airplay-windows PRIVATE PkgConfig::AVAHI_CLIENT)
-        target_compile_definitions(airplay-windows PRIVATE HAVE_AVAHI=1)
+        target_link_libraries(FastXR-AirPlay PRIVATE PkgConfig::AVAHI_CLIENT)
+        target_compile_definitions(FastXR-AirPlay PRIVATE HAVE_AVAHI=1)
         message(STATUS "Avahi: linking via PkgConfig::AVAHI_CLIENT")
     else()
         message(STATUS "Avahi: not found — mDNS disabled on this Linux build "

@@ -91,9 +91,8 @@ std::vector<unsigned char> build_info_plist(const DeviceContext& ctx) {
 #else
     plist_t root = plist_new_dict();
 
-    // Resolution & HEVC bit are user-tunable via the overlay's
-    // OPTIONS panel — read from LiveSettings when present (mutated
-    // by the UI thread), fall back to the static DeviceContext
+    // Read resolution, HEVC and FPS from the live FastXR configuration
+    // when present; fall back to the static DeviceContext
     // fields otherwise. iOS only consumes /info on connection, so
     // changes apply on the next handshake.
     int mirror_w     = ctx.mirror_width;

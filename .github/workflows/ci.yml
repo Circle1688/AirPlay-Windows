@@ -77,7 +77,7 @@ jobs:
           $env:SDL_VIDEODRIVER = "dummy"
           $env:SDL_AUDIODRIVER = "dummy"
           $proc = Start-Process `
-            -FilePath "build\Release\airplay-windows.exe" `
+            -FilePath "build\Release\FastXR-AirPlay.exe" `
             -ArgumentList "--log" `
             -PassThru `
             -RedirectStandardOutput "airplay.stdout.log" `
