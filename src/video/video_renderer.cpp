@@ -19,6 +19,7 @@
 
 #if defined(_WIN32)
     #include <dwmapi.h>
+    #include "resource.h"
     // Duplicate the Win11 backdrop constants locally so we don't require
     // the very latest Windows SDK headers at build time. The DwmApi call
     // is still resolved at runtime against dwmapi.dll, which silently
@@ -47,6 +48,25 @@ constexpr int kStatusBarHeight  = 28;
 constexpr int kToolbarHeight    = 40;
 
 #if defined(_WIN32)
+// Use the embedded multi-resolution icon for the title bar and task switcher.
+// LR_SHARED keeps these handles valid for the lifetime of the application.
+void set_window_icon(SDL_Window* w) {
+    SDL_SysWMinfo info{};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(w, &info)) return;
+    const HINSTANCE instance = ::GetModuleHandleW(nullptr);
+    const auto large_icon = reinterpret_cast<HICON>(::LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_AIRPLAY), IMAGE_ICON,
+        ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON), LR_SHARED));
+    const auto small_icon = reinterpret_cast<HICON>(::LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_AIRPLAY), IMAGE_ICON,
+        ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+    if (large_icon) ::SendMessageW(info.info.win.window, WM_SETICON, ICON_BIG,
+                                  reinterpret_cast<LPARAM>(large_icon));
+    if (small_icon) ::SendMessageW(info.info.win.window, WM_SETICON, ICON_SMALL,
+                                  reinterpret_cast<LPARAM>(small_icon));
+}
+
 // Enable the Windows 11 Mica system backdrop on an SDL-owned window.
 // No-op on pre-Win11 hosts (DwmSetWindowAttribute silently ignores
 // unknown attribute IDs — the function just returns a non-zero HRESULT).
@@ -61,6 +81,7 @@ void enable_mica_backdrop(SDL_Window* w) {
 }
 
 #else
+void set_window_icon(SDL_Window*) {}
 void enable_mica_backdrop(SDL_Window*) {}
 #endif
 
@@ -705,6 +726,8 @@ void VideoRenderer::run(const std::string& title) {
     }
     LOG_INFO << "VideoRenderer window up (" << kDefaultWinWidth
              << 'x' << kDefaultWinHeight << ", resizable)";
+
+    set_window_icon(window);
 
     // Win11 Mica backdrop. No-op on pre-Win11 — caller sees a regular
     // opaque window chrome instead of the subtle acrylic blur.

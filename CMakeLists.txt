@@ -422,6 +422,10 @@ else()
 endif()
 
 if(WIN32)
+    enable_language(RC)
+    target_sources(FastXR-AirPlay PRIVATE resources/airplay.rc)
+    target_include_directories(FastXR-AirPlay PRIVATE resources)
+
     # ws2_32: Winsock; iphlpapi: GetAdaptersAddresses; dnsapi: native mDNS;
     # dwmapi: DwmSetWindowAttribute for the Win11 Mica backdrop on the
     # VideoRenderer window.
